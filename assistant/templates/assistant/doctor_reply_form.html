@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card p-4">
+            <h3 class="fw-bold mb-1" style="color:#2c7a7b;">Reply to {{ doc_msg.patient.name }}</h3>
+            <p class="text-muted mb-4">Admission ID: {{ doc_msg.patient.admission_id }}</p>
+
+            <div class="alert alert-light border mb-4">
+                <strong>Patient's question:</strong><br>
+                {{ doc_msg.question }}
+            </div>
+
+            {% if doc_msg.is_replied %}
+                <div class="alert alert-success">You already replied to this on {{ doc_msg.replied_at }}.</div>
+                <p><strong>Your reply:</strong> {{ doc_msg.reply }}</p>
+            {% else %}
+                <form method="post">
+                    {% csrf_token %}
+                    <textarea name="reply" class="form-control mb-3" rows="5" placeholder="Type your reply to the patient..." required></textarea>
+                    <button type="submit" class="btn btn-primary w-100">Send Reply</button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

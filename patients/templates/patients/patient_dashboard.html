@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% load static %}
+{% block content %}
+
+<div class="card p-4 mb-4" style="background: linear-gradient(135deg, #2c7a7b, #38a3a5); color: white;">
+    <h2 class="fw-bold mb-1">Welcome, {{ patient.name }}</h2>
+    {% if patient.doctor_name %}<p class="mb-0">Assigned Doctor: Dr. {{ patient.doctor_name }}</p>{% endif %}
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="fw-semibold mb-2" style="color:#2c7a7b;"><i class="bi bi-clipboard2-pulse"></i> Diagnosis</h5>
+    <p class="mb-0">{{ patient.diagnosis }}</p>
+</div>
+
+<div class="card p-4 mb-4 text-center" id="motivation-banner" style="background: linear-gradient(135deg, #f6a800, #f9c74f); color: white;">
+    <i class="bi bi-sun-fill fs-2 mb-2"></i>
+    <p class="fs-5 mb-0 fst-italic" id="motivation-text">{{ patient.name }}, you are stronger than you think.</p>
+</div>
+
+<button class="btn btn-sm btn-outline-primary mb-4" onclick="document.getElementById('alarm-sound').play(); document.getElementById('alarm-sound').pause(); document.getElementById('chalisa-sound').play(); document.getElementById('chalisa-sound').pause(); alert('Sound enabled for reminders.');">
+    <i class="bi bi-volume-up"></i> Enable Sound
+</button>
+
+{% if patient.doctor_messages.all %}
+<div class="card p-4 mb-4">
+    <h5 class="fw-semibold mb-3" style="color:#2c7a7b;"><i class="bi bi-chat-left-dots"></i> Messages with Your Doctor</h5>
+    {% for msg in patient.doctor_messages.all %}
+        <div class="border rounded p-3 mb-2">
+            <p class="mb-1"><strong>You asked:</strong> {{ msg.question }}</p>
+            {% if msg.is_replied %}
+                <div class="alert alert-success mb-0 mt-2">
+                    <strong>Dr. {{ patient.doctor_name }} replied:</strong> {{ msg.reply }}
+                </div>
+            {% else %}
+                <p class="text-muted mb-0"><i class="bi bi-hourglass-split"></i> Waiting for your doctor's reply...</p>
+            {% endif %}
+        </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="fw-semibold" style="color:#2c7a7b;">Your Treatments</h4>
+</div>
+
+<div class="row g-3 mb-4">
+    {% for treatment in patient.treatments.all %}
+        <div class="col-md-6">
+            <div class="card p-3 h-100 {% if treatment.is_overdue %}pulse-alert border border-danger{% endif %}">
+                <h6 class="fw-semibold">{{ treatment.get_treatment_type_display }}: {{ treatment.treatment_name }}</h6>
+                <p class="mb-1 text-muted">Sessions: {{ treatment.completed_sessions }} / {{ treatment.total_sessions }} ({{ treatment.sessions_remaining }} remaining)</p>
+                <div class="progress mb-2">
+                    <div class="progress-bar bg-success" role="progressbar" style="width: 0%;" data-target-width="{{ treatment.progress_percent }}">
+                        {{ treatment.progress_percent }}%
+                    </div>
+                </div>
+                {% if treatment.next_session_date %}
+                    {% if treatment.is_overdue %}
+                        <div class="alert alert-danger py-1 px-2 mb-2"><i class="bi bi-exclamation-triangle-fill"></i> Overdue! Was due {{ treatment.next_session_date }}</div>
+                    {% elif treatment.is_due_soon %}
+                        <div class="alert alert-warning py-1 px-2 mb-2"><i class="bi bi-alarm"></i> Upcoming on {{ treatment.next_session_date }}</div>
+                    {% else %}
+                        <p class="text-muted mb-2"><i class="bi bi-calendar-event"></i> Next: {{ treatment.next_session_date }}</p>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    {% empty %}
+        <p class="text-muted">No treatments recorded yet.</p>
+    {% endfor %}
+</div>
+
+<h4 class="fw-semibold mb-3" style="color:#2c7a7b;">Your Medicines</h4>
+<div class="row g-3 mb-4">
+    {% for medicine in patient.medicines.all %}
+        <div class="col-md-4">
+            <div class="card p-3 h-100">
+                <h6 class="fw-semibold">{{ medicine.medicine_name }}</h6>
+                <p class="text-muted mb-1">Dosage: {{ medicine.dosage }}</p>
+                <p class="text-muted mb-1"><i class="bi bi-clock"></i> Every {{ medicine.frequency_hours }}h, starting {{ medicine.reminder_time }}</p>
+            </div>
+        </div>
+    {% empty %}
+        <p class="text-muted">No medicines added yet.</p>
+    {% endfor %}
+</div>
+
+<div class="card p-4 mb-4">
+    <h5 class="fw-semibold mb-2" style="color:#2c7a7b;"><i class="bi bi-mic"></i> Hanuman Chalisa Reminder</h5>
+    <p class="mb-1">Status: {% if patient.hanuman_chalisa_enabled %}<span class="text-success">Enabled</span>{% else %}<span class="text-muted">Disabled</span>{% endif %}</p>
+    {% if patient.hanuman_chalisa_time %}<p class="text-muted mb-2">Time: {{ patient.hanuman_chalisa_time }}</p>{% endif %}
+    <a href="{% url 'patient_update' patient.pk %}" class="btn btn-sm btn-outline-secondary">Change Setting</a>
+</div>
+
+<div class="card p-4 text-center" style="background:#f0faf9;">
+    <h5 class="fw-semibold mb-2" style="color:#2c7a7b;"><i class="bi bi-stars"></i> Have a question?</h5>
+<a href="{% url 'patient_ai_chat' %}" class="btn btn-primary">Ask AI Assistant</a>
+</div>
+
+<audio id="alarm-sound" src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
+<audio id="chalisa-sound" src="{% static 'patients/hanuman_chalisa.mp3' %}" preload="auto"></audio>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    document.querySelectorAll('.progress-bar').forEach(bar => {
+        setTimeout(() => { bar.style.width = bar.dataset.targetWidth + '%'; }, 200);
+    });
+
+    const medicineTimes = [
+        {% for medicine in patient.medicines.all %}
+            {% for t in medicine.schedule_times %}"{{ t|time:'H:i' }}",{% endfor %}
+        {% endfor %}
+    ];
+    const chalisaEnabled = {{ patient.hanuman_chalisa_enabled|yesno:"true,false" }};
+    const chalisaTime = "{{ patient.hanuman_chalisa_time|time:'H:i'|default:'' }}";
+
+    const treatmentAlerts = [
+        {% for treatment in patient.treatments.all %}
+            {% if treatment.next_session_date %}
+            {
+                name: "{{ treatment.treatment_name }}",
+                date: "{{ treatment.next_session_date|date:'Y-m-d' }}",
+                isDueSoon: {{ treatment.is_due_soon|yesno:"true,false" }},
+                isOverdue: {{ treatment.is_overdue|yesno:"true,false" }}
+            },
+            {% endif %}
+        {% endfor %}
+    ];
+
+    if (Notification.permission !== "granted" && Notification.permission !== "denied") {
+        Notification.requestPermission();
+    }
+
+    function checkMedicineAlarms() {
+        const now = new Date();
+        const currentTime = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+        if (medicineTimes.includes(currentTime)) {
+            document.getElementById('alarm-sound').play();
+            if (Notification.permission === "granted") new Notification("Medicine Reminder", { body: "Time to take your medicine." });
+        }
+        if (chalisaEnabled && chalisaTime !== "" && currentTime === chalisaTime) {
+            document.getElementById('chalisa-sound').play();
+            if (Notification.permission === "granted") new Notification("Hanuman Chalisa", { body: "Time for daily recitation." });
+        }
+    }
+    setInterval(checkMedicineAlarms, 30000);
+
+    function checkTreatmentReminders() {
+        treatmentAlerts.forEach(function(t) {
+            if (t.isOverdue || t.isDueSoon) {
+                if (Notification.permission === "granted") {
+                    new Notification("Upcoming Session Reminder", {
+                        body: t.name + " session is on " + t.date + (t.isOverdue ? " (overdue!)" : " (coming up soon)")
+                    });
+                }
+            }
+        });
+    }
+
+    checkTreatmentReminders();
+    setInterval(checkTreatmentReminders, 3600000);
+</script>
+{% endblock %}

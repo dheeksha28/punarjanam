@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="row justify-content-center mt-5">
+    <div class="col-md-5">
+        <div class="card p-4">
+            <div class="text-center mb-4">
+                <i class="bi bi-heart-pulse-fill text-danger fs-1"></i>
+                <h3 class="fw-bold mt-2" style="color:#2c7a7b;">Welcome to Dee</h3>
+                <p class="text-muted">Login to continue</p>
+            </div>
+            <form method="post">
+                {% csrf_token %}
+                {% for field in form %}
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">{{ field.label }}</label>
+                        {{ field }}
+                        {% if field.errors %}<div class="text-danger small">{{ field.errors }}</div>{% endif %}
+                    </div>
+                {% endfor %}
+                <button type="submit" class="btn btn-primary w-100"><i class="bi bi-box-arrow-in-right"></i> Login</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
