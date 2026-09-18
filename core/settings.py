@@ -15,6 +15,8 @@ from decouple import config
 import dj_database_url
 
 GROQ_API_KEY = config('GROQ_API_KEY')
+
+TAVILY_API_KEY = config('TAVILY_API_KEY', default='')
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 

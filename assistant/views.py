@@ -8,13 +8,31 @@ from .models import ChatSession, ChatMessage, DoctorMessage
 from patients.models import Patient
 
 
+def build_history(session, limit=6, max_chars=600):
+    """Last few chat turns in the format rag_engine.get_answer() expects.
+    Call this BEFORE saving the new user message so the question isn't duplicated."""
+    recent = list(session.messages.order_by('-id')[:limit])[::-1]
+    return [
+        {
+            'role': 'assistant' if m.role == 'ai' else 'user',
+            'content': m.content[:max_chars],
+        }
+        for m in recent
+    ]
+
+
 @login_required
 def ai_search(request):
+    # Staff-only: this searches ALL patients' records, so patients must not use it.
+    if hasattr(request.user, 'patient_profile'):
+        return redirect('patient_dashboard')
+
     answer = None
     question = None
     if request.method == 'POST':
-        question = request.POST.get('question')
-        answer = get_answer(question)
+        question = (request.POST.get('question') or '').strip()
+        if question:
+            answer = get_answer(question)
     return render(request, 'assistant/ai_search.html', {'answer': answer, 'question': question})
 
 
@@ -39,25 +57,28 @@ def patient_ai_chat(request, session_id=None):
             contact_doctor(request, patient, last_question)
             action = 'doctor_contacted'
         else:
-            question = request.POST.get('question')
-            q_lower = question.lower()
+            question = (request.POST.get('question') or '').strip()
+            if question:
+                q_lower = question.lower()
 
-            ChatMessage.objects.create(session=session, role='user', content=question)
+                # history first, THEN save the new message
+                history = build_history(session)
+                ChatMessage.objects.create(session=session, role='user', content=question)
 
-            if session.title == 'New chat':
-                session.title = question[:50]
-                session.save()
+                if session.title == 'New chat':
+                    session.title = question[:50]
+                    session.save()
 
-            if 'chalisa' in q_lower or 'chalis' in q_lower:
-                action = 'play_chalisa'
-                answer = "Sure, playing the Hanuman Chalisa for you now."
-            elif 'motivation' in q_lower or 'motivate' in q_lower:
-                action = 'play_motivation'
-                answer = "Here's something to lift your spirits."
-            else:
-                answer = get_answer(question, patient=patient)
+                if 'chalisa' in q_lower or 'chalis' in q_lower:
+                    action = 'play_chalisa'
+                    answer = "Sure, playing the Hanuman Chalisa for you now."
+                elif 'motivation' in q_lower or 'motivate' in q_lower:
+                    action = 'play_motivation'
+                    answer = "Here's something to lift your spirits."
+                else:
+                    answer = get_answer(question, patient=patient, history=history)
 
-            ChatMessage.objects.create(session=session, role='ai', content=answer)
+                ChatMessage.objects.create(session=session, role='ai', content=answer)
 
     messages = session.messages.all()
     last_user_message = messages.filter(role='user').last()
