@@ -3,11 +3,10 @@ rag_engine.py  -  ChatGPT/Claude-style patient assistant (matches patients/model
 
 Per question:
   1. Load the patient's real data from the DB (diagnosis, treatments, medicines)
-  2. LLM builds a precise web-search query from symptom + THEIR treatment/medicines
-  3. Search the real web (trusted medical sites first)
-  4. LLM answers: links symptom -> their treatment, explains why, self-care,
-     red flags, sources
-  5. Safety pass + urgent-symptom banner
+  2. Classify intent: FACTUAL / SYMPTOM / GENERAL
+  3. For SYMPTOM/GENERAL: LLM builds a search query, searches the real web
+  4. LLM answers with a prompt matched to the intent
+  5. Safety pass + urgent-symptom banner (for SYMPTOM/GENERAL patient answers)
 
 Install:
     pip install tavily-python duckduckgo-search
@@ -30,7 +29,7 @@ FALLBACK_MESSAGE = (
 )
 
 MAIN_MODEL = "openai/gpt-oss-120b"   # answers
-FAST_MODEL = "openai/gpt-oss-20b"    # small helper tasks     # small helper tasks
+FAST_MODEL = "openai/gpt-oss-20b"    # small helper tasks
 
 TRUSTED_MEDICAL_DOMAINS = [
     "cancer.gov", "cancer.org", "mayoclinic.org", "nhs.uk", "medlineplus.gov",
@@ -38,7 +37,6 @@ TRUSTED_MEDICAL_DOMAINS = [
     "clevelandclinic.org", "who.int",
 ]
 
-# Always show an urgent banner for these, regardless of what the LLM says
 URGENT_PATTERNS = [
     r"\bfever\b", r"\bchills\b",
     r"trouble breathing|short(ness)? of breath|can'?t breathe",
@@ -53,7 +51,6 @@ _embedding_model = None
 
 
 def get_embedding_model():
-    """Loaded lazily so Django starts fast and only staff-mode search needs it."""
     global _embedding_model
     if _embedding_model is None:
         _embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
@@ -65,7 +62,7 @@ def llm(model=MAIN_MODEL, temperature=0.3):
 
 
 # ─────────────────────────────────────────────
-# 1. PATIENT DATA (from your real models)
+# 1. PATIENT DATA
 # ─────────────────────────────────────────────
 def patient_to_text(p):
     text = (
@@ -108,8 +105,6 @@ def patient_summary(p):
 
 
 def staff_context(question, k=5):
-    """Staff mode (all patients): retrieve relevant chunks. Uses a throw-away, uniquely
-    named collection so no data ever leaks between requests."""
     docs = [patient_to_text(p) for p in Patient.objects.all()]
     if not docs:
         return "No patients in the system."
@@ -124,16 +119,26 @@ def staff_context(question, k=5):
             store.delete_collection()
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────
+# 2. INTENT CLASSIFICATION
+# ─────────────────────────────────────────────
 def classify_intent(question, history_text):
-    """Fast, cheap classification: is this a quick factual lookup or a symptom/health concern?
-    Falls back to 'symptom' (the safer, more thorough path) if classification fails."""
-    prompt = f"""Classify the PATIENT'S MESSAGE below into exactly one word: FACTUAL or SYMPTOM.
+    """Classify into FACTUAL (personal record lookup), SYMPTOM (personal health concern),
+    or GENERAL (external medical knowledge not about their specific file)."""
+    prompt = f"""Classify the PATIENT'S MESSAGE below into exactly one word: FACTUAL, SYMPTOM, or GENERAL.
 
-FACTUAL = a direct lookup answerable from their records alone, e.g. "when is my next session",
-"what medicines am I on", "what's my diagnosis", "who is my doctor", "how many sessions left".
+FACTUAL = a direct lookup answerable from their own records alone, e.g. "when is my next session",
+"what medicines am I on", "what's my diagnosis", "who is my doctor".
 
-SYMPTOM = describing a new symptom, side effect, pain, or health concern that needs explanation,
-self-care advice, and red-flag warnings, e.g. "I have a rash", "I feel nauseous", "my hand hurts".
+SYMPTOM = describing a new symptom, side effect, pain, or health concern about THEMSELVES that needs
+explanation tied to their own treatment, self-care advice, and red-flag warnings, e.g. "I have a rash",
+"I feel nauseous".
+
+GENERAL = a general medical/knowledge question NOT about their personal situation, e.g. "what is the
+survival rate for colon cancer", "what causes cancer", "latest research on chemotherapy", "is
+immunotherapy better than chemo".
 
 If genuinely unclear, choose SYMPTOM.
 
@@ -142,17 +147,21 @@ RECENT CONVERSATION:
 
 PATIENT'S MESSAGE: {question}
 
-Return ONLY one word: FACTUAL or SYMPTOM."""
+Return ONLY one word: FACTUAL, SYMPTOM, or GENERAL."""
     try:
         result = llm(FAST_MODEL, 0).invoke(prompt).content.strip().upper()
-        return "FACTUAL" if "FACTUAL" in result else "SYMPTOM"
+        if "FACTUAL" in result:
+            return "FACTUAL"
+        if "GENERAL" in result:
+            return "GENERAL"
+        return "SYMPTOM"
     except Exception as e:
         print(f"INTENT ERROR: {e}")
         return "SYMPTOM"
 
 
 # ─────────────────────────────────────────────
-# 2. WEB SEARCH
+# 3. WEB SEARCH
 # ─────────────────────────────────────────────
 def build_search_query(question, summary, history_text):
     prompt = f"""Write ONE short Google-style search query (max 15 words) that will find
@@ -177,7 +186,6 @@ Return ONLY the query text."""
 
 
 def web_search(query, max_results=5):
-    """Returns [{title, url, content}]. Trusted medical sites first, then open web."""
     key = getattr(settings, "TAVILY_API_KEY", "")
     if key:
         try:
@@ -216,7 +224,7 @@ def format_web_results(results):
 
 
 # ─────────────────────────────────────────────
-# 3. SAFETY
+# 4. SAFETY
 # ─────────────────────────────────────────────
 def is_urgent(text):
     return any(re.search(p, text, re.I) for p in URGENT_PATTERNS)
@@ -242,23 +250,19 @@ ANSWER:
 
 
 # ─────────────────────────────────────────────
-# 4. MAIN ENTRY
+# 5. MAIN ENTRY
 # ─────────────────────────────────────────────
 def get_answer(question, patient=None, history=None):
-    """
-    question : str
-    patient  : Patient instance (patient app view) or None (staff view)
-    history  : optional list of {"role": "user"|"assistant", "content": str}
-    """
     history = history or []
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:]) or "None"
 
     # ---- Step 0: what kind of question is this? ----
     intent = classify_intent(question, history_text) if patient else "SYMPTOM"
+
     # ---- Step 1: patient data ----
     try:
         if patient:
-            context = patient_to_text(patient)     # one patient = tiny, pass it all
+            context = patient_to_text(patient)
             summary = patient_summary(patient)
         else:
             context = staff_context(question)
@@ -267,17 +271,56 @@ def get_answer(question, patient=None, history=None):
         print(f"CONTEXT ERROR: {e}")
         return FALLBACK_MESSAGE
 
-    # ---- Step 2: real-world search ----
-       # ---- Step 2: real-world search (only needed for symptom questions) ----
-    if intent == "SYMPTOM":
+    # ---- Step 2: real-world search (only for SYMPTOM/GENERAL) ----
+    if intent in ("SYMPTOM", "GENERAL"):
         query = build_search_query(question, summary, history_text)
         web_context = format_web_results(web_search(query))
     else:
         query = ""
         web_context = ""
+
     # ---- Step 3: answer ----
     try:
-        if patient:
+        if patient and intent == "FACTUAL":
+            prompt = f"""You are a warm health assistant for a cancer patient. Answer directly and briefly.
+
+━━━ THEIR OWN RECORDS ━━━
+{context}
+
+━━━ RECENT CONVERSATION ━━━
+{history_text}
+
+━━━ PATIENT ASKS ━━━
+{question}
+
+RULES:
+- Answer ONLY using their records above. 1-3 short sentences, no preamble, no re-explaining past topics.
+- Do NOT add self-care tips, red flags, or sources — this is a simple factual lookup.
+- If the records don't contain the answer, say so plainly and suggest they ask their care team.
+
+Answer:"""
+
+        elif patient and intent == "GENERAL":
+            prompt = f"""You are a knowledgeable health assistant answering a general medical question
+for a cancer patient. This question is NOT about their personal treatment — answer it generally using
+the web information below, in plain, reassuring language.
+
+━━━ REAL-WORLD MEDICAL INFORMATION (live web search: "{query}") ━━━
+{web_context}
+
+━━━ PATIENT ASKS ━━━
+{question}
+
+RULES:
+- Answer using the web information, cited as [1], [2], etc.
+- Do NOT reference their personal diagnosis, treatments, or medicines — this is a general question.
+- Keep it clear and not overly long — a few short paragraphs.
+- End with a "Sources:" list of the URLs actually used.
+- If the web information is insufficient, say so honestly rather than guessing.
+
+Answer:"""
+
+        elif patient:
             prompt = f"""You are a warm, knowledgeable health assistant for a cancer patient, like a
 caring nurse who has read their file. Speak to them directly ("you", "your").
 
@@ -292,11 +335,6 @@ caring nurse who has read their file. Speak to them directly ("you", "your").
 
 ━━━ PATIENT SAYS ━━━
 {question}
-IMPORTANT — MATCH YOUR ANSWER LENGTH TO THE QUESTION:
-- If the question is a simple factual lookup (e.g., "when is my next session", "what medicines am I on", "what's my diagnosis"), answer it in 1-3 short sentences directly from THEIR RECORDS. Do NOT re-explain earlier topics, do NOT use the full symptom-analysis format below, and do NOT add unrelated self-care advice or sources.
-- Only use the full step-by-step format (empathy, analysis, self-care, red flags, sources) when the patient is describing a NEW symptom, side effect, or health concern in THIS message.
-
-
 
 HOW TO ANSWER
 1. Start with one empathetic sentence.
@@ -344,9 +382,9 @@ Answer:"""
         return FALLBACK_MESSAGE
 
     # ---- Step 4: safety ----
-    if patient:
+    if patient and intent in ("SYMPTOM", "GENERAL"):
         answer = safety_check(answer)
-        if is_urgent(question):
+        if intent == "SYMPTOM" and is_urgent(question):
             answer = (
                 "⚠️ **What you describe can be serious during cancer treatment. "
                 "Please call your care team or go to the nearest emergency department now, "
