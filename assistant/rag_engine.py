@@ -29,8 +29,8 @@ FALLBACK_MESSAGE = (
     "Please try again in a moment, or reach out to your care team directly if this is urgent."
 )
 
-MAIN_MODEL = "llama-3.3-70b-versatile"   # answers
-FAST_MODEL = "llama-3.1-8b-instant"      # small helper tasks
+MAIN_MODEL = "openai/gpt-oss-120b"   # answers
+FAST_MODEL = "openai/gpt-oss-20b"    # small helper tasks     # small helper tasks
 
 TRUSTED_MEDICAL_DOMAINS = [
     "cancer.gov", "cancer.org", "mayoclinic.org", "nhs.uk", "medlineplus.gov",
@@ -124,6 +124,31 @@ def staff_context(question, k=5):
             store.delete_collection()
         except Exception:
             pass
+def classify_intent(question, history_text):
+    """Fast, cheap classification: is this a quick factual lookup or a symptom/health concern?
+    Falls back to 'symptom' (the safer, more thorough path) if classification fails."""
+    prompt = f"""Classify the PATIENT'S MESSAGE below into exactly one word: FACTUAL or SYMPTOM.
+
+FACTUAL = a direct lookup answerable from their records alone, e.g. "when is my next session",
+"what medicines am I on", "what's my diagnosis", "who is my doctor", "how many sessions left".
+
+SYMPTOM = describing a new symptom, side effect, pain, or health concern that needs explanation,
+self-care advice, and red-flag warnings, e.g. "I have a rash", "I feel nauseous", "my hand hurts".
+
+If genuinely unclear, choose SYMPTOM.
+
+RECENT CONVERSATION:
+{history_text}
+
+PATIENT'S MESSAGE: {question}
+
+Return ONLY one word: FACTUAL or SYMPTOM."""
+    try:
+        result = llm(FAST_MODEL, 0).invoke(prompt).content.strip().upper()
+        return "FACTUAL" if "FACTUAL" in result else "SYMPTOM"
+    except Exception as e:
+        print(f"INTENT ERROR: {e}")
+        return "SYMPTOM"
 
 
 # ─────────────────────────────────────────────
@@ -228,6 +253,8 @@ def get_answer(question, patient=None, history=None):
     history = history or []
     history_text = "\n".join(f"{h['role']}: {h['content']}" for h in history[-6:]) or "None"
 
+    # ---- Step 0: what kind of question is this? ----
+    intent = classify_intent(question, history_text) if patient else "SYMPTOM"
     # ---- Step 1: patient data ----
     try:
         if patient:
@@ -241,9 +268,13 @@ def get_answer(question, patient=None, history=None):
         return FALLBACK_MESSAGE
 
     # ---- Step 2: real-world search ----
-    query = build_search_query(question, summary, history_text)
-    web_context = format_web_results(web_search(query))
-
+       # ---- Step 2: real-world search (only needed for symptom questions) ----
+    if intent == "SYMPTOM":
+        query = build_search_query(question, summary, history_text)
+        web_context = format_web_results(web_search(query))
+    else:
+        query = ""
+        web_context = ""
     # ---- Step 3: answer ----
     try:
         if patient:
@@ -261,6 +292,11 @@ caring nurse who has read their file. Speak to them directly ("you", "your").
 
 ━━━ PATIENT SAYS ━━━
 {question}
+IMPORTANT — MATCH YOUR ANSWER LENGTH TO THE QUESTION:
+- If the question is a simple factual lookup (e.g., "when is my next session", "what medicines am I on", "what's my diagnosis"), answer it in 1-3 short sentences directly from THEIR RECORDS. Do NOT re-explain earlier topics, do NOT use the full symptom-analysis format below, and do NOT add unrelated self-care advice or sources.
+- Only use the full step-by-step format (empathy, analysis, self-care, red flags, sources) when the patient is describing a NEW symptom, side effect, or health concern in THIS message.
+
+
 
 HOW TO ANSWER
 1. Start with one empathetic sentence.
