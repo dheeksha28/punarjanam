@@ -17,7 +17,6 @@ settings.py:
 import re
 import uuid
 from django.conf import settings
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_groq import ChatGroq
@@ -53,9 +52,20 @@ _embedding_model = None
 def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
-        _embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        _embedding_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2")
     return _embedding_model
+def get_embedding_model():
+    global _embedding_model
 
+    if _embedding_model is None:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+
+        _embedding_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2"
+        )
+
+    return _embedding_model
 
 def llm(model=MAIN_MODEL, temperature=0.3):
     return ChatGroq(groq_api_key=settings.GROQ_API_KEY, model_name=model, temperature=temperature)
