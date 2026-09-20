@@ -17,8 +17,8 @@ settings.py:
 import re
 import uuid
 from django.conf import settings
-from langchain_community.vectorstores import Chroma
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+
 from langchain_groq import ChatGroq
 from patients.models import Patient
 
@@ -109,21 +109,12 @@ def patient_summary(p):
 
 
 def staff_context(question, k=5):
-    docs = [patient_to_text(p) for p in Patient.objects.all()]
-    if not docs:
+    """Staff mode (all patients): include all patient records directly.
+    No vector search needed at this scale, and it keeps the deployed app lightweight."""
+    patients = Patient.objects.all()
+    if not patients:
         return "No patients in the system."
-    chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150).create_documents(docs)
-    store = Chroma.from_documents(
-        chunks, get_embedding_model(), collection_name=f"staff_{uuid.uuid4().hex}"
-    )
-    try:
-        return "\n\n".join(d.page_content for d in store.similarity_search(question, k=k))
-    finally:
-        try:
-            store.delete_collection()
-        except Exception:
-            pass
-
+    return "\n\n".join(patient_to_text(p) for p in patients)
 
 # ─────────────────────────────────────────────
 # 2. INTENT CLASSIFICATION
